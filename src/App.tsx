@@ -37,6 +37,14 @@ const STATUS_LABEL: Record<QueueItem['status'], string> = {
   failed: '失敗',
 };
 
+type Filter = 'all' | 'waiting' | 'failed' | 'done';
+
+const FILTER_STATUSES: Record<Exclude<Filter, 'all'>, QueueItem['status'][]> = {
+  waiting: ['pending', 'paused', 'checking', 'uploading', 'retrying', 'verifying'],
+  failed: ['failed'],
+  done: ['done', 'exists'],
+};
+
 function verdict(item: QueueItem): 'match' | 'mismatch' | 'unknown' | null {
   if ((item.status !== 'done' && item.status !== 'exists') || !item.drive) return null;
   const sizeOk = item.drive.size === String(item.file.size);
@@ -57,7 +65,9 @@ export default function App() {
   const [acceptMode, setAcceptMode] = useState(() => localStorage.getItem(ACCEPT_KEY) ?? 'none');
   const [message, setMessage] = useState<string | null>(null);
   const [finished, setFinished] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>('all');
   const inputRef = useRef<HTMLInputElement>(null);
+  const filtersRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     queue.onFinished = () => {
@@ -148,15 +158,16 @@ export default function App() {
     return {
       total,
       uploaded,
-      done: count(['done', 'exists']),
-      failed: count(['failed']),
-      waiting: count(['pending', 'paused', 'checking', 'uploading', 'retrying', 'verifying']),
+      done: count(FILTER_STATUSES.done),
+      failed: count(FILTER_STATUSES.failed),
+      waiting: count(FILTER_STATUSES.waiting),
       match: verdicts.filter((v) => v === 'match').length,
       mismatch: verdicts.filter((v) => v === 'mismatch').length,
       unknown: verdicts.filter((v) => v === 'unknown').length,
     };
   }, [items]);
 
+  const visibleItems = filter === 'all' ? items : items.filter((i) => FILTER_STATUSES[filter].includes(i.status));
   const busy = queue.running;
   const hasPending = items.some((i) => i.status === 'pending' || i.status === 'paused');
   const beforeLogin = () => {
@@ -277,13 +288,44 @@ export default function App() {
           <div className="dialog" onClick={(e) => e.stopPropagation()}>
             <h2>上傳完畢</h2>
             <p>{finished}</p>
-            <button onClick={() => setFinished(null)}>確定</button>
+            {stats.failed > 0 && (
+              <button
+                onClick={() => {
+                  setFilter('failed');
+                  setFinished(null);
+                  filtersRef.current?.scrollIntoView({ behavior: 'smooth' });
+                }}
+              >
+                查看失敗項目
+              </button>
+            )}
+            <button className={stats.failed > 0 ? 'secondary' : ''} onClick={() => setFinished(null)}>確定</button>
           </div>
         </div>
       )}
 
+      {items.length > 0 && (
+        <div className="filters" ref={filtersRef}>
+          {([
+            ['all', '全部', items.length],
+            ['waiting', '待上傳', stats.waiting],
+            ['failed', '失敗', stats.failed],
+            ['done', '已完成', stats.done],
+          ] as const).map(([key, label, n]) => (
+            <button
+              key={key}
+              className={`chip ${filter === key ? 'active' : ''} ${key === 'failed' && n > 0 ? 'danger' : ''}`}
+              onClick={() => setFilter(key)}
+            >
+              {label} {n}
+            </button>
+          ))}
+        </div>
+      )}
+
       <ul className="items">
-        {items.map((item) => <ItemCard key={item.id} item={item} />)}
+        {visibleItems.map((item) => <ItemCard key={item.id} item={item} />)}
+        {items.length > 0 && visibleItems.length === 0 && <li className="hint">沒有符合的檔案</li>}
       </ul>
     </main>
   );

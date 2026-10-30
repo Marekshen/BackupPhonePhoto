@@ -118,3 +118,19 @@ progress { width: 100%; height: 8px; }
 .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .title-row h1 { min-width: 0; }
 .version { flex-shrink: 0; color: var(--muted); font-size: 13px; }
+
+.filters {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
+  padding: 8px 0;
+  background: var(--bg);
+  overflow-x: auto;
+}
+
+.chip { flex-shrink: 0; font-size: 14px; padding: 6px 12px; border-radius: 999px; background: var(--card); color: var(--text); border-color: var(--border); }
+.chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.chip.danger:not(.active) { color: var(--bad); border-color: var(--bad); }
+.chip.danger.active { background: var(--bad); border-color: var(--bad); }
