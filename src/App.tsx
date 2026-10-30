@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { CLIENT_ID, consumeRedirect, getToken, logout, startLogin, tokenExpiresAt } from './auth';
 import { createFolder, type DriveFolder, getFolder, listFolders } from './drive';
+import { playChime, unlockAudio } from './sound';
 import { type QueueItem, UploadQueue } from './uploader';
 
 const FOLDER_KEY = 'folder';
@@ -55,7 +56,24 @@ export default function App() {
   const [newFolderName, setNewFolderName] = useState('iPhone 備份');
   const [acceptMode, setAcceptMode] = useState(() => localStorage.getItem(ACCEPT_KEY) ?? 'none');
   const [message, setMessage] = useState<string | null>(null);
+  const [finished, setFinished] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    queue.onFinished = () => {
+      const all = queue.items;
+      const done = all.filter((i) => i.status === 'done' || i.status === 'exists').length;
+      const failed = all.filter((i) => i.status === 'failed').length;
+      const mismatch = all.filter((i) => verdict(i) === 'mismatch').length;
+      setFinished(
+        `成功 ${done} 個${failed ? `，失敗 ${failed} 個` : ''}${mismatch ? `，比對不一致 ${mismatch} 個` : '，全部比對一致'}`,
+      );
+      playChime();
+    };
+    return () => {
+      queue.onFinished = null;
+    };
+  }, []);
 
   const items = useSyncExternalStore(
     (fn) => queue.subscribe(fn),
@@ -233,7 +251,15 @@ export default function App() {
           {busy ? (
             <button onClick={() => queue.pause()}>暫停</button>
           ) : (
-            <button disabled={!token || !folder || !hasPending} onClick={() => folder && queue.start(folder.id)}>
+            <button
+              disabled={!token || !folder || !hasPending}
+              onClick={() => {
+                if (!folder) return;
+                unlockAudio();
+                setFinished(null);
+                queue.start(folder.id);
+              }}
+            >
               {items.some((i) => i.status === 'paused') ? '繼續上傳' : '開始上傳'}
             </button>
           )}
@@ -242,6 +268,16 @@ export default function App() {
         </div>
         <p className="hint">上傳期間請保持畫面開啟，切換 App 或鎖定螢幕會中斷，回來後會自動續傳。</p>
       </section>
+
+      {finished && (
+        <div className="overlay" onClick={() => setFinished(null)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+            <h2>上傳完畢</h2>
+            <p>{finished}</p>
+            <button onClick={() => setFinished(null)}>確定</button>
+          </div>
+        </div>
+      )}
 
       <ul className="items">
         {items.map((item) => <ItemCard key={item.id} item={item} />)}
@@ -270,8 +306,8 @@ function ItemCard({ item }: { item: QueueItem }) {
       </div>
       <div className="meta">lastModified：{new Date(item.file.lastModified).toLocaleString()}</div>
       {l && (
-        <div className="meta">
-          本地：{l.container ?? ''} {l.codec ?? ''} {l.width ? `${l.width}×${l.height}` : ''}
+        <div className="meta info">
+          檔案格式：{l.container ?? ''} {l.codec ?? ''} {l.width ? `${l.width}×${l.height}` : ''}
           {l.durationSec ? `・${l.durationSec.toFixed(1)} 秒` : ''}
           {l.bitrateMbps ? `・${l.bitrateMbps.toFixed(1)} Mbps` : ''}
           {l.hdr ? `・${l.hdr}` : ''}

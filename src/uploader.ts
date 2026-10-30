@@ -68,6 +68,7 @@ export class UploadQueue {
   running = false;
   authRequired = false;
   folderId: string | null = null;
+  onFinished: (() => void) | null = null;
   private controllers = new Map<string, AbortController>();
   private listeners = new Set<Listener>();
   private wakeLock: WakeLockSentinel | null = null;
@@ -154,6 +155,7 @@ export class UploadQueue {
           this.running = false;
           this.releaseWakeLock();
           this.emit();
+          this.onFinished?.();
         }
         this.pump();
       });
