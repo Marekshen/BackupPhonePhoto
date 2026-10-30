@@ -166,8 +166,10 @@ export default function App() {
 
   return (
     <main>
-      <div className="version">{__APP_VERSION__}</div>
-      <h1>照片備份到 Google Drive</h1>
+      <div className="title-row">
+        <h1>照片備份到 Google Drive</h1>
+        <span className="version">{__APP_VERSION__}</span>
+      </div>
 
       {!CLIENT_ID && <p className="error">尚未設定 VITE_GOOGLE_CLIENT_ID</p>}
       {authError && <p className="error" onClick={() => setAuthError(null)}>{authError}</p>}

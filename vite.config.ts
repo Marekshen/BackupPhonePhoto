@@ -1,23 +1,12 @@
-import { execSync } from 'node:child_process';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import pkg from './package.json';
 
-function commitHash(): string {
-  try {
-    return execSync('git rev-parse --short HEAD').toString().trim();
-  } catch {
-    return 'dev';
-  }
-}
-
-const buildTime = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(5, 16);
-
 export default defineConfig({
   base: '/BackupPhonePhoto/',
   define: {
-    __APP_VERSION__: JSON.stringify(`v${pkg.version} · ${commitHash()} · ${buildTime}`),
+    __APP_VERSION__: JSON.stringify(`v${pkg.version}`),
   },
   plugins: [
     react(),
