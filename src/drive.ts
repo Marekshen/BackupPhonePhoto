@@ -97,8 +97,67 @@ export async function findByFingerprint(folderId: string, fp: string): Promise<D
   return data.files[0] ?? null;
 }
 
+export async function listFingerprints(folderId: string): Promise<Map<string, DriveFile>> {
+  const map = new Map<string, DriveFile>();
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      q: `'${escapeQuery(folderId)}' in parents and trashed=false`,
+      fields: `nextPageToken,files(${DRIVE_FILE_FIELDS},appProperties)`,
+      pageSize: '1000',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const data = await api<{ files: (DriveFile & { appProperties?: Record<string, string> })[]; nextPageToken?: string }>(
+      `${API}/files?${params}`,
+    );
+    for (const { appProperties, ...f } of data.files) {
+      const fp = appProperties?.fp;
+      if (fp && !map.has(fp)) map.set(fp, f);
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return map;
+}
+
 export async function getFile(id: string): Promise<DriveFile> {
   return api<DriveFile>(`${API}/files/${id}?fields=${encodeURIComponent(DRIVE_FILE_FIELDS)}`);
+}
+
+function fileMetadata(file: File, folderId: string, fp: string) {
+  return {
+    name: file.name,
+    parents: [folderId],
+    mimeType: file.type || undefined,
+    appProperties: { fp, size: String(file.size) },
+  };
+}
+
+export async function uploadMultipart(
+  file: File,
+  data: Uint8Array,
+  folderId: string,
+  fp: string,
+  onProgress: (loaded: number) => void,
+  signal: AbortSignal,
+): Promise<DriveFile> {
+  const boundary = `b${crypto.randomUUID().replace(/-/g, '')}`;
+  const head =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${JSON.stringify(fileMetadata(file, folderId, fp))}\r\n` +
+    `--${boundary}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`;
+  const headBytes = new TextEncoder().encode(head);
+  const body = new Blob([headBytes, data as BlobPart, `\r\n--${boundary}--`]);
+  const params = new URLSearchParams({ uploadType: 'multipart', fields: DRIVE_FILE_FIELDS });
+  const result = await sendXhr(
+    'POST',
+    `${UPLOAD_API}/files?${params}`,
+    { ...authHeader(), 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body,
+    (loaded) => onProgress(Math.max(0, loaded - headBytes.byteLength)),
+    signal,
+  );
+  if (result.kind !== 'complete') throw new HttpError(0, '上傳回應異常');
+  return result.file;
 }
 
 export async function createUploadSession(
@@ -115,12 +174,7 @@ export async function createUploadSession(
       'X-Upload-Content-Type': file.type || 'application/octet-stream',
       'X-Upload-Content-Length': String(file.size),
     },
-    body: JSON.stringify({
-      name: file.name,
-      parents: [folderId],
-      mimeType: file.type || undefined,
-      appProperties: { fp, size: String(file.size) },
-    }),
+    body: JSON.stringify(fileMetadata(file, folderId, fp)),
   });
   if (res.status === 401) throw new AuthRequiredError();
   if (!res.ok) throw new HttpError(res.status, `建立上傳工作失敗 ${res.status}: ${await res.text()}`);
@@ -140,15 +194,16 @@ function parseRange(range: string | null): number {
 }
 
 function sendXhr(
-  sessionUri: string,
+  method: string,
+  url: string,
   headers: Record<string, string>,
-  body: Uint8Array | null,
+  body: Uint8Array | Blob | null,
   onProgress: ((loaded: number) => void) | null,
   signal: AbortSignal,
 ): Promise<ChunkResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', sessionUri);
+    xhr.open(method, url);
     for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     if (onProgress) xhr.upload.onprogress = (e) => onProgress(e.loaded);
     const onAbort = () => xhr.abort();
@@ -178,7 +233,7 @@ function sendXhr(
 }
 
 export function queryUploadStatus(sessionUri: string, total: number, signal: AbortSignal): Promise<ChunkResult> {
-  return sendXhr(sessionUri, { ...authHeader(), 'Content-Range': `bytes */${total}` }, null, null, signal);
+  return sendXhr('PUT', sessionUri, { ...authHeader(), 'Content-Range': `bytes */${total}` }, null, null, signal);
 }
 
 export function uploadChunk(
@@ -191,6 +246,7 @@ export function uploadChunk(
 ): Promise<ChunkResult> {
   const end = offset + data.byteLength - 1;
   return sendXhr(
+    'PUT',
     sessionUri,
     { ...authHeader(), 'Content-Range': `bytes ${offset}-${end}/${total}` },
     data,

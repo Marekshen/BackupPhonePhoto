@@ -5,14 +5,17 @@ import {
   findByFingerprint,
   getFile,
   HttpError,
+  listFingerprints,
   queryUploadStatus,
   uploadChunk,
+  uploadMultipart,
 } from './drive';
 import { fingerprint, IncrementalSha256, sha256File } from './hash';
 import { type LocalMediaInfo, readLocalMediaInfo } from './media';
 
-const CHUNK_SIZE = 8 * 1024 * 1024;
-const CONCURRENCY = 2;
+const CHUNK_SIZE = 32 * 1024 * 1024;
+const SMALL_FILE_LIMIT = 5 * 1024 * 1024;
+const CONCURRENCY = 4;
 const MAX_RETRIES = 8;
 
 export type ItemStatus =
@@ -40,6 +43,8 @@ export interface QueueItem {
   sessionUri?: string;
   hasher?: IncrementalSha256;
   offset: number;
+  maybeSent?: boolean;
+  rev: number;
 }
 
 type Listener = () => void;
@@ -78,6 +83,7 @@ export class UploadQueue {
   private wakeLock: WakeLockSentinel | null = null;
   private lastProgressEmit = 0;
   private mediaInfoChain: Promise<void> = Promise.resolve();
+  private known: Map<string, DriveFile> | null = null;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -91,12 +97,14 @@ export class UploadQueue {
 
   private update(item: QueueItem, patch: Partial<QueueItem>): void {
     Object.assign(item, patch);
+    item.rev += 1;
     this.emit();
   }
 
   private progress(item: QueueItem, uploaded: number): void {
     if (uploaded > item.uploaded) this.transferredBytes += uploaded - item.uploaded;
     item.uploaded = uploaded;
+    item.rev += 1;
     const now = performance.now();
     if (now - this.lastProgressEmit < 300) return;
     this.lastProgressEmit = now;
@@ -118,7 +126,7 @@ export class UploadQueue {
       const key = `${file.name}|${file.size}`;
       if (known.has(key)) continue;
       known.add(key);
-      const item: QueueItem = { id: crypto.randomUUID(), file, status: 'pending', uploaded: 0, attempts: 0, offset: 0 };
+      const item: QueueItem = { id: crypto.randomUUID(), file, status: 'pending', uploaded: 0, attempts: 0, offset: 0, rev: 0 };
       this.items.push(item);
       this.mediaInfoChain = this.mediaInfoChain
         .then(() => readLocalMediaInfo(file))
@@ -148,10 +156,14 @@ export class UploadQueue {
     this.runStartedAt = Date.now();
     this.running = true;
     this.authRequired = false;
-    for (const i of this.items) if (i.status === 'paused') i.status = 'pending';
+    for (const i of this.items) if (i.status === 'paused') Object.assign(i, { status: 'pending', rev: i.rev + 1 });
     this.emit();
     this.acquireWakeLock();
-    this.pump();
+    this.known = null;
+    listFingerprints(folderId)
+      .then((m) => { this.known = m; })
+      .catch(() => { this.known = null; })
+      .then(() => this.pump());
   }
 
   pause(): void {
@@ -170,7 +182,7 @@ export class UploadQueue {
   }
 
   retryAllFailed(): void {
-    for (const i of this.items) if (i.status === 'failed') Object.assign(i, { status: 'pending', error: undefined, attempts: 0 });
+    for (const i of this.items) if (i.status === 'failed') Object.assign(i, { status: 'pending', error: undefined, attempts: 0, rev: i.rev + 1 });
     this.emit();
     if (this.running) this.pump();
   }
@@ -202,7 +214,7 @@ export class UploadQueue {
       this.update(item, { status: 'checking', error: undefined });
       item.fp ??= await fingerprint(item.file);
       if (!item.sessionUri) {
-        const existing = await findByFingerprint(folderId, item.fp);
+        const existing = this.known ? (this.known.get(item.fp) ?? null) : await findByFingerprint(folderId, item.fp);
         if (existing) {
           this.update(item, { status: 'verifying', drive: existing, uploaded: item.file.size });
           const localSha256 = await sha256File(item.file);
@@ -221,7 +233,8 @@ export class UploadQueue {
           // 取不到完整 metadata 時沿用上傳回應
         }
       }
-      this.update(item, { status: 'done', drive, localSha256, sessionUri: undefined, hasher: undefined });
+      this.known?.set(item.fp, drive);
+      this.update(item, { status: 'done', drive, localSha256, sessionUri: undefined, hasher: undefined, maybeSent: undefined });
     } catch (e) {
       if (isAbort(e)) {
         this.update(item, { status: 'paused' });
@@ -238,6 +251,13 @@ export class UploadQueue {
   private async uploadWithRetry(item: QueueItem, folderId: string, signal: AbortSignal): Promise<DriveFile> {
     for (;;) {
       try {
+        if (item.file.size <= SMALL_FILE_LIMIT) {
+          if (item.maybeSent) {
+            const existing = await findByFingerprint(folderId, item.fp!);
+            if (existing) return existing;
+          }
+          return await this.uploadSmall(item, folderId, signal);
+        }
         if (item.sessionUri) {
           const status = await queryUploadStatus(item.sessionUri, item.file.size, signal);
           if (status.kind === 'complete') return status.file;
@@ -259,6 +279,18 @@ export class UploadQueue {
         await sleep(delay, signal);
       }
     }
+  }
+
+  private async uploadSmall(item: QueueItem, folderId: string, signal: AbortSignal): Promise<DriveFile> {
+    const data = new Uint8Array(await item.file.arrayBuffer());
+    item.hasher = await IncrementalSha256.create();
+    item.hasher.feed(data, 0);
+    this.update(item, { status: 'uploading', uploaded: 0, error: undefined, maybeSent: true });
+    const file = await uploadMultipart(item.file, data, folderId, item.fp!, (loaded) => {
+      this.progress(item, Math.min(loaded, item.file.size));
+    }, signal);
+    item.attempts = 0;
+    return file;
   }
 
   private async uploadFrom(item: QueueItem, folderId: string, signal: AbortSignal): Promise<DriveFile> {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { CLIENT_ID, consumeRedirect, getToken, logout, startLogin, tokenExpiresAt } from './auth';
 import { createFolder, type DriveFolder, getFolder, listFolders } from './drive';
 import { playChime, unlockAudio } from './sound';
@@ -364,14 +364,14 @@ export default function App() {
       )}
 
       <ul className="items">
-        {visibleItems.map((item) => <ItemCard key={item.id} item={item} />)}
+        {visibleItems.map((item) => <ItemCard key={item.id} item={item} rev={item.rev} />)}
         {items.length > 0 && visibleItems.length === 0 && <li className="hint">沒有符合的檔案</li>}
       </ul>
     </main>
   );
 }
 
-function ItemCard({ item }: { item: QueueItem }) {
+const ItemCard = memo(function ItemCard({ item }: { item: QueueItem; rev: number }) {
   const v = verdict(item);
   const pct = item.file.size ? Math.floor((Math.min(item.uploaded, item.file.size) / item.file.size) * 100) : 0;
   const l = item.local;
@@ -438,4 +438,4 @@ function ItemCard({ item }: { item: QueueItem }) {
       )}
     </li>
   );
-}
+});
