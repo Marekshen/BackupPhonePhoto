@@ -166,6 +166,7 @@ export default function App() {
 
   return (
     <main>
+      <div className="version">{__APP_VERSION__}</div>
       <h1>照片備份到 Google Drive</h1>
 
       {!CLIENT_ID && <p className="error">尚未設定 VITE_GOOGLE_CLIENT_ID</p>}
