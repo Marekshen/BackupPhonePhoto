@@ -69,9 +69,15 @@ export class UploadQueue {
   authRequired = false;
   folderId: string | null = null;
   onFinished: (() => void) | null = null;
+  transferredBytes = 0;
+  private activeMs = 0;
+  private runStartedAt: number | null = null;
+  private runFinished = true;
   private controllers = new Map<string, AbortController>();
   private listeners = new Set<Listener>();
   private wakeLock: WakeLockSentinel | null = null;
+  private lastProgressEmit = 0;
+  private mediaInfoChain: Promise<void> = Promise.resolve();
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -88,6 +94,24 @@ export class UploadQueue {
     this.emit();
   }
 
+  private progress(item: QueueItem, uploaded: number): void {
+    if (uploaded > item.uploaded) this.transferredBytes += uploaded - item.uploaded;
+    item.uploaded = uploaded;
+    const now = performance.now();
+    if (now - this.lastProgressEmit < 300) return;
+    this.lastProgressEmit = now;
+    this.emit();
+  }
+
+  elapsedMs(): number {
+    return this.activeMs + (this.runStartedAt === null ? 0 : Date.now() - this.runStartedAt);
+  }
+
+  private stopClock(): void {
+    if (this.runStartedAt !== null) this.activeMs += Date.now() - this.runStartedAt;
+    this.runStartedAt = null;
+  }
+
   add(files: File[]): void {
     const known = new Set(this.items.map((i) => `${i.file.name}|${i.file.size}`));
     for (const file of files) {
@@ -96,7 +120,9 @@ export class UploadQueue {
       known.add(key);
       const item: QueueItem = { id: crypto.randomUUID(), file, status: 'pending', uploaded: 0, attempts: 0, offset: 0 };
       this.items.push(item);
-      readLocalMediaInfo(file).then((local) => this.update(item, { local }));
+      this.mediaInfoChain = this.mediaInfoChain
+        .then(() => readLocalMediaInfo(file))
+        .then((local) => this.update(item, { local }));
     }
     this.emit();
   }
@@ -114,6 +140,12 @@ export class UploadQueue {
 
   start(folderId: string): void {
     this.folderId = folderId;
+    if (this.runFinished) {
+      this.transferredBytes = 0;
+      this.activeMs = 0;
+      this.runFinished = false;
+    }
+    this.runStartedAt = Date.now();
     this.running = true;
     this.authRequired = false;
     for (const i of this.items) if (i.status === 'paused') i.status = 'pending';
@@ -124,6 +156,7 @@ export class UploadQueue {
 
   pause(): void {
     this.running = false;
+    this.stopClock();
     for (const c of this.controllers.values()) c.abort();
     this.emit();
     this.releaseWakeLock();
@@ -153,6 +186,8 @@ export class UploadQueue {
         this.controllers.delete(next.id);
         if (this.running && this.controllers.size === 0 && !this.items.some((i) => i.status === 'pending')) {
           this.running = false;
+          this.stopClock();
+          this.runFinished = true;
           this.releaseWakeLock();
           this.emit();
           this.onFinished?.();
@@ -179,10 +214,12 @@ export class UploadQueue {
       this.update(item, { status: 'verifying', uploaded: item.file.size });
       const localSha256 = item.hasher!.digest();
       let drive = driveFile;
-      try {
-        drive = await getFile(driveFile.id);
-      } catch {
-        // 取不到完整 metadata 時沿用上傳回應
+      if (!drive.sha256Checksum) {
+        try {
+          drive = await getFile(driveFile.id);
+        } catch {
+          // 取不到完整 metadata 時沿用上傳回應
+        }
       }
       this.update(item, { status: 'done', drive, localSha256, sessionUri: undefined, hasher: undefined });
     } catch (e) {
@@ -238,7 +275,7 @@ export class UploadQueue {
       this.update(item, { status: 'uploading', uploaded: item.offset, error: undefined });
       const base = item.offset;
       const result = await uploadChunk(item.sessionUri, data, item.offset, total, (loaded) => {
-        this.update(item, { uploaded: base + loaded });
+        this.progress(item, base + loaded);
       }, signal);
       item.attempts = 0;
       if (result.kind === 'complete') return result.file;

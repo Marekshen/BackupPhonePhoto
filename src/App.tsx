@@ -25,6 +25,22 @@ function formatBytes(n: number): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map((n) => String(n).padStart(2, '0')).join(':');
+}
+
+function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / 1024 / 1024).toFixed(2)} MB/s`;
+  return `${(bytesPerSec / 1024).toFixed(0)} KB/s`;
+}
+
+function runSummary(): string {
+  const ms = queue.elapsedMs();
+  const speed = ms > 0 ? queue.transferredBytes / (ms / 1000) : 0;
+  return `處理時間 ${formatDuration(ms)}・平均速度 ${formatSpeed(speed)}`;
+}
+
 const STATUS_LABEL: Record<QueueItem['status'], string> = {
   pending: '待上傳',
   checking: '檢查中',
@@ -76,7 +92,7 @@ export default function App() {
       const failed = all.filter((i) => i.status === 'failed').length;
       const mismatch = all.filter((i) => verdict(i) === 'mismatch').length;
       setFinished(
-        `成功 ${done} 個${failed ? `，失敗 ${failed} 個` : ''}${mismatch ? `，比對不一致 ${mismatch} 個` : '，全部比對一致'}`,
+        `成功 ${done} 個${failed ? `，失敗 ${failed} 個` : ''}${mismatch ? `，比對不一致 ${mismatch} 個` : '，全部比對一致'}\n${runSummary()}`,
       );
       playChime();
     };
@@ -169,6 +185,20 @@ export default function App() {
 
   const visibleItems = filter === 'all' ? items : items.filter((i) => FILTER_STATUSES[filter].includes(i.status));
   const busy = queue.running;
+
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!busy) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [busy]);
+
+  const elapsedMs = queue.elapsedMs();
+  const speed = elapsedMs > 0 ? queue.transferredBytes / (elapsedMs / 1000) : 0;
+  const remainingBytes = items
+    .filter((i) => FILTER_STATUSES.waiting.includes(i.status))
+    .reduce((s, i) => s + Math.max(0, i.file.size - i.uploaded), 0);
+  const etaMs = busy && speed > 0 && elapsedMs > 5000 ? (remainingBytes / speed) * 1000 : null;
   const hasPending = items.some((i) => i.status === 'pending' || i.status === 'paused');
   const beforeLogin = () => {
     if (items.length > 0 && !confirm('登入會重新載入頁面，已選取的檔案需要重新選取。確定要繼續？')) return;
@@ -261,6 +291,16 @@ export default function App() {
           比對：<span className="ok">一致 {stats.match}</span>・
           <span className="bad">不一致 {stats.mismatch}</span>・無法比對 {stats.unknown}
         </p>
+        {elapsedMs > 0 && (
+          <p>
+            處理時間 {formatDuration(elapsedMs)}・平均速度 {formatSpeed(speed)}
+            <br />
+            預估結束{' '}
+            {etaMs === null
+              ? busy ? '計算中…' : '—'
+              : `${new Date(Date.now() + etaMs).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })}（剩餘 ${formatDuration(etaMs)}）`}
+          </p>
+        )}
         <div className="row wrap">
           {busy ? (
             <button onClick={() => queue.pause()}>暫停</button>
