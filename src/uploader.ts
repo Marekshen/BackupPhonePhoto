@@ -46,9 +46,18 @@ export interface QueueItem {
   offset: number;
   maybeSent?: boolean;
   rev: number;
+  addedAt: number;
 }
 
 type Listener = () => void;
+
+const RELIABLE_SOURCES = ['EXIF', '影片拍攝時間', '檔名'];
+
+function reliableTime(item: QueueItem): boolean {
+  const l = item.local;
+  if (!l?.captureTime) return false;
+  return RELIABLE_SOURCES.includes(l.captureSource ?? '') || l.captureTime < item.addedAt - 24 * 3600 * 1000;
+}
 
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
@@ -127,11 +136,9 @@ export class UploadQueue {
       const key = `${file.name}|${file.size}`;
       if (known.has(key)) continue;
       known.add(key);
-      const item: QueueItem = { id: crypto.randomUUID(), file, status: 'pending', uploaded: 0, attempts: 0, offset: 0, rev: 0 };
+      const item: QueueItem = { id: crypto.randomUUID(), file, status: 'pending', uploaded: 0, attempts: 0, offset: 0, rev: 0, addedAt: Date.now() };
       this.items.push(item);
-      this.mediaInfoChain = this.mediaInfoChain
-        .then(() => readLocalMediaInfo(file))
-        .then((local) => this.update(item, { local }));
+      this.mediaInfoChain = this.mediaInfoChain.then(() => this.ensureLocal(item));
     }
     this.emit();
   }
@@ -214,7 +221,8 @@ export class UploadQueue {
     try {
       this.update(item, { status: 'checking', error: undefined });
       item.fp ??= await fingerprint(item.file);
-      item.local ??= await readLocalMediaInfo(item.file);
+      await this.ensureLocal(item);
+      await this.borrowTime(item);
       if (!item.sessionUri) {
         const existing = this.known ? (this.known.get(item.fp) ?? null) : await findByFingerprint(folderId, item.fp);
         if (existing) {
@@ -249,6 +257,26 @@ export class UploadQueue {
       } else {
         this.update(item, { status: 'failed', error: (e as Error).message });
       }
+    }
+  }
+
+  private async ensureLocal(item: QueueItem): Promise<void> {
+    if (item.local) return;
+    const local = await readLocalMediaInfo(item.file);
+    if (!item.local) this.update(item, { local });
+  }
+
+  private async borrowTime(item: QueueItem): Promise<void> {
+    if (!item.local || reliableTime(item)) return;
+    const index = this.items.indexOf(item);
+    const candidates = [...this.items.slice(0, index).reverse(), ...this.items.slice(index + 1)];
+    for (const other of candidates) {
+      await this.ensureLocal(other);
+      if (!reliableTime(other)) continue;
+      this.update(item, {
+        local: { ...item.local, captureTime: other.local!.captureTime, captureSource: `沿用 ${other.file.name} 的時間` },
+      });
+      return;
     }
   }
 
