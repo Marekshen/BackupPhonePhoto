@@ -390,6 +390,9 @@ const ItemCard = memo(function ItemCard({ item }: { item: QueueItem; rev: number
         {item.file.type || '（無 MIME）'}・{formatBytes(item.file.size)}（{item.file.size.toLocaleString()} bytes）・{pct}%
       </div>
       <div className="meta">lastModified：{new Date(item.file.lastModified).toLocaleString()}</div>
+      {l?.captureTime && (
+        <div className="meta">拍攝時間：{new Date(l.captureTime).toLocaleString()}（{l.captureSource}）</div>
+      )}
       {l && (
         <div className="meta info">
           檔案格式：{l.container ?? ''} {l.codec ?? ''} {l.width ? `${l.width}×${l.height}` : ''}
@@ -417,6 +420,13 @@ const ItemCard = memo(function ItemCard({ item }: { item: QueueItem; rev: number
             <tr><th>SHA-256 Drive</th><td className="mono">{d.sha256Checksum ?? '—'}</td></tr>
             <tr><th>Drive 檔名</th><td>{d.name}</td></tr>
             <tr><th>Drive MIME</th><td>{d.mimeType}</td></tr>
+            <tr>
+              <th>Drive 時間</th>
+              <td>
+                修改 {d.modifiedTime ? new Date(d.modifiedTime).toLocaleString() : '—'}
+                ・建立 {d.createdTime ? new Date(d.createdTime).toLocaleString() : '—'}
+              </td>
+            </tr>
             <tr><th>File ID</th><td className="mono">{d.id}</td></tr>
             {img && (
               <tr>

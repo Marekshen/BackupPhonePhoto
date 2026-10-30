@@ -7,6 +7,7 @@ import {
   HttpError,
   listFingerprints,
   queryUploadStatus,
+  setModifiedTime,
   uploadChunk,
   uploadMultipart,
 } from './drive';
@@ -213,12 +214,14 @@ export class UploadQueue {
     try {
       this.update(item, { status: 'checking', error: undefined });
       item.fp ??= await fingerprint(item.file);
+      item.local ??= await readLocalMediaInfo(item.file);
       if (!item.sessionUri) {
         const existing = this.known ? (this.known.get(item.fp) ?? null) : await findByFingerprint(folderId, item.fp);
         if (existing) {
           this.update(item, { status: 'verifying', drive: existing, uploaded: item.file.size });
           const localSha256 = await sha256File(item.file);
-          this.update(item, { status: 'exists', localSha256 });
+          const drive = await this.fixModifiedTime(item, existing);
+          this.update(item, { status: 'exists', localSha256, drive });
           return;
         }
       }
@@ -233,6 +236,7 @@ export class UploadQueue {
           // 取不到完整 metadata 時沿用上傳回應
         }
       }
+      drive = await this.fixModifiedTime(item, drive);
       this.known?.set(item.fp, drive);
       this.update(item, { status: 'done', drive, localSha256, sessionUri: undefined, hasher: undefined, maybeSent: undefined });
     } catch (e) {
@@ -245,6 +249,17 @@ export class UploadQueue {
       } else {
         this.update(item, { status: 'failed', error: (e as Error).message });
       }
+    }
+  }
+
+  private async fixModifiedTime(item: QueueItem, drive: DriveFile): Promise<DriveFile> {
+    const time = item.local?.captureTime;
+    if (!time || !drive.modifiedTime || Math.abs(Date.parse(drive.modifiedTime) - time) < 1000) return drive;
+    try {
+      return { ...drive, ...(await setModifiedTime(drive.id, time)) };
+    } catch (e) {
+      item.error = `修改日期設定失敗：${(e as Error).message}`;
+      return drive;
     }
   }
 
@@ -286,7 +301,7 @@ export class UploadQueue {
     item.hasher = await IncrementalSha256.create();
     item.hasher.feed(data, 0);
     this.update(item, { status: 'uploading', uploaded: 0, error: undefined, maybeSent: true });
-    const file = await uploadMultipart(item.file, data, folderId, item.fp!, (loaded) => {
+    const file = await uploadMultipart(item.file, data, folderId, item.fp!, item.local?.captureTime, (loaded) => {
       this.progress(item, Math.min(loaded, item.file.size));
     }, signal);
     item.attempts = 0;
@@ -295,7 +310,7 @@ export class UploadQueue {
 
   private async uploadFrom(item: QueueItem, folderId: string, signal: AbortSignal): Promise<DriveFile> {
     if (!item.sessionUri) {
-      item.sessionUri = await createUploadSession(item.file, folderId, item.fp!);
+      item.sessionUri = await createUploadSession(item.file, folderId, item.fp!, item.local?.captureTime);
       item.hasher = await IncrementalSha256.create();
       item.offset = 0;
     }

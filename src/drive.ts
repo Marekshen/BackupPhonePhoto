@@ -123,11 +123,22 @@ export async function getFile(id: string): Promise<DriveFile> {
   return api<DriveFile>(`${API}/files/${id}?fields=${encodeURIComponent(DRIVE_FILE_FIELDS)}`);
 }
 
-function fileMetadata(file: File, folderId: string, fp: string) {
+export async function setModifiedTime(id: string, time: number): Promise<DriveFile> {
+  return api<DriveFile>(`${API}/files/${id}?fields=${encodeURIComponent(DRIVE_FILE_FIELDS)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modifiedTime: new Date(time).toISOString() }),
+  });
+}
+
+function fileMetadata(file: File, folderId: string, fp: string, time?: number) {
+  const iso = time ? new Date(time).toISOString() : undefined;
   return {
     name: file.name,
     parents: [folderId],
     mimeType: file.type || undefined,
+    createdTime: iso,
+    modifiedTime: iso,
     appProperties: { fp, size: String(file.size) },
   };
 }
@@ -137,13 +148,14 @@ export async function uploadMultipart(
   data: Uint8Array,
   folderId: string,
   fp: string,
+  time: number | undefined,
   onProgress: (loaded: number) => void,
   signal: AbortSignal,
 ): Promise<DriveFile> {
   const boundary = `b${crypto.randomUUID().replace(/-/g, '')}`;
   const head =
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
-    `${JSON.stringify(fileMetadata(file, folderId, fp))}\r\n` +
+    `${JSON.stringify(fileMetadata(file, folderId, fp, time))}\r\n` +
     `--${boundary}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`;
   const headBytes = new TextEncoder().encode(head);
   const body = new Blob([headBytes, data as BlobPart, `\r\n--${boundary}--`]);
@@ -164,6 +176,7 @@ export async function createUploadSession(
   file: File,
   folderId: string,
   fp: string,
+  time?: number,
 ): Promise<string> {
   const params = new URLSearchParams({ uploadType: 'resumable', fields: DRIVE_FILE_FIELDS });
   const res = await fetch(`${UPLOAD_API}/files?${params}`, {
@@ -174,7 +187,7 @@ export async function createUploadSession(
       'X-Upload-Content-Type': file.type || 'application/octet-stream',
       'X-Upload-Content-Length': String(file.size),
     },
-    body: JSON.stringify(fileMetadata(file, folderId, fp)),
+    body: JSON.stringify(fileMetadata(file, folderId, fp, time)),
   });
   if (res.status === 401) throw new AuthRequiredError();
   if (!res.ok) throw new HttpError(res.status, `建立上傳工作失敗 ${res.status}: ${await res.text()}`);
