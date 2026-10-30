@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { IncrementalSha256, sha256File } from './hash';
-import { readLocalMediaInfo } from './media';
+import { parseFilenameTime, readLocalMediaInfo } from './media';
 
 function box(type: string, ...parts: Uint8Array[]): Uint8Array {
   const len = 8 + parts.reduce((s, p) => s + p.byteLength, 0);
@@ -148,6 +148,18 @@ describe('拍攝時間', () => {
     const make = (...parts: Uint8Array[]) => new File([box('ftyp', ascii('qt  '), bytes(4)), box('moov', ...parts)], 'a.mov', { type: 'video/quicktime', lastModified: 1 });
     expect(await readLocalMediaInfo(make(mvhd, meta))).toMatchObject({ captureTime: SHOT, captureSource: '影片拍攝時間' });
     expect(await readLocalMediaInfo(make(mvhd))).toMatchObject({ captureTime: SHOT - 3600000, captureSource: '影片建立時間' });
+  });
+
+  it('螢幕錄影優先使用檔名時間，而非 mvhd 的匯出時間', async () => {
+    const mvhd = box('mvhd', bytes(100, (v) => {
+      v.setUint32(4, Math.floor(Date.now() / 1000) + 2082844800);
+      v.setUint32(12, 600);
+      v.setUint32(16, 6000);
+    }));
+    const file = new File([box('ftyp', ascii('qt  '), bytes(4)), box('moov', mvhd)], 'ScreenRecording_06-27-2026 17-14-45_1.mov', { type: 'video/quicktime' });
+    expect(await readLocalMediaInfo(file)).toMatchObject({ captureTime: new Date(2026, 5, 27, 17, 14, 45).getTime(), captureSource: '檔名' });
+    expect(parseFilenameTime('PXL_20240501_102030123.jpg')).toBe(new Date(2024, 4, 1, 10, 20, 30).getTime());
+    expect(parseFilenameTime('IMG_8379.jpeg')).toBeUndefined();
   });
 
   it('找不到時改用檔案修改時間', async () => {

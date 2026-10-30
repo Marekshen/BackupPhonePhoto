@@ -348,8 +348,34 @@ async function imageInfo(file: File): Promise<LocalMediaInfo> {
   return info;
 }
 
+function validLocal(y: number, mo: number, d: number, h: number, mi: number, s: number): number | undefined {
+  if (y < 1990 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return undefined;
+  return new Date(y, mo - 1, d, h, mi, s).getTime();
+}
+
+export function parseFilenameTime(name: string): number | undefined {
+  const sr = /ScreenRecording_(\d{2})-(\d{2})-(\d{4}) (\d{2})-(\d{2})-(\d{2})/.exec(name);
+  if (sr) {
+    const [a, b, y, h, mi, s] = sr.slice(1).map(Number);
+    return a > 12 ? validLocal(y, b, a, h, mi, s) : validLocal(y, a, b, h, mi, s);
+  }
+  const g = /(?:^|\D)((?:19|20)\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[ _T-]?(\d{2})[-_.:]?(\d{2})[-_.:]?(\d{2})/.exec(name);
+  if (g) {
+    const [y, mo, d, h, mi, s] = g.slice(1).map(Number);
+    return validLocal(y, mo, d, h, mi, s);
+  }
+  return undefined;
+}
+
+const STRONG_SOURCES = ['EXIF', '影片拍攝時間'];
+
 export async function readLocalMediaInfo(file: File): Promise<LocalMediaInfo> {
   const info = await parseMedia(file);
+  const fromName = parseFilenameTime(file.name);
+  if (fromName && !STRONG_SOURCES.includes(info.captureSource ?? '')) {
+    info.captureTime = fromName;
+    info.captureSource = '檔名';
+  }
   if (!info.captureTime && file.lastModified) {
     info.captureTime = file.lastModified;
     info.captureSource = '檔案修改時間（找不到拍攝時間）';
